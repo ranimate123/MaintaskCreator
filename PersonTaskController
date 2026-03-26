@@ -1,0 +1,339 @@
+public with sharing class PersonAccountEventController {
+
+    @AuraEnabled(cacheable=true)
+    public static Account searchAccount(String phone, String email) {
+
+        phone = phone != null ? phone.trim() : null;
+        email = email != null ? email.trim() : null;
+
+        if(String.isBlank(phone) && String.isBlank(email)){
+            return null;
+        }
+
+        List<Account> accounts = new List<Account>();
+
+        if(!String.isBlank(phone) && !String.isBlank(email)) {
+            accounts = [
+                SELECT Id, Name, FirstName, LastName,
+                       Phone, PersonMobilePhone, Whatsapp_Number__c,
+                       PersonEmail, PersonContactId
+                FROM Account
+                WHERE IsPersonAccount = true
+                AND PersonEmail = :email
+                AND (Phone = :phone OR PersonMobilePhone = :phone OR Whatsapp_Number__c = :phone)
+                LIMIT 1
+            ];
+        }
+        else if(!String.isBlank(phone)) {
+            accounts = [
+                SELECT Id, Name, FirstName, LastName,
+                       Phone, PersonMobilePhone, Whatsapp_Number__c,
+                       PersonEmail, PersonContactId
+                FROM Account
+                WHERE IsPersonAccount = true
+                AND (Phone = :phone OR PersonMobilePhone = :phone OR Whatsapp_Number__c = :phone)
+                LIMIT 1
+            ];
+        }
+        else if(!String.isBlank(email)) {
+            accounts = [
+                SELECT Id, Name, FirstName, LastName,
+                       Phone, PersonMobilePhone, Whatsapp_Number__c,
+                       PersonEmail, PersonContactId
+                FROM Account
+                WHERE IsPersonAccount = true
+                AND PersonEmail = :email
+                LIMIT 1
+            ];
+        }
+
+        return accounts.isEmpty() ? null : accounts[0];
+    }
+
+    @AuraEnabled
+    public static Id createEvent(Id accountId, String deskManagerDeveloperName, Id ownerId, String subject) {
+
+        if(accountId == null){
+            throw new AuraHandledException('Account Id required');
+        }
+        if(String.isBlank(deskManagerDeveloperName)){
+            throw new AuraHandledException('Desk Manager is required');
+        }
+
+        Account acc = [
+            SELECT Id
+            FROM Account
+            WHERE Id = :accountId
+            LIMIT 1
+        ];
+
+        Desk_Manager_Data__mdt dm = [
+            SELECT MasterLabel, Phone_No__c
+            FROM Desk_Manager_Data__mdt
+            WHERE Name__c = :deskManagerDeveloperName
+            LIMIT 1
+        ];
+
+        Task t = new Task();
+        t.Subject = subject;
+        t.WhatId = accountId;
+        t.Call_Status__c = 'Engaged';
+
+        if(ownerId != null){
+            t.OwnerId = ownerId;
+        }
+
+        t.Status = 'Open';
+        t.Priority = 'Normal';
+        
+        t.RecordTypeId = Schema.SObjectType.Task.getRecordTypeInfosByDeveloperName()
+                            .get('Physical_Meeting')?.getRecordTypeId();
+
+        // If Record Type not found, fallback to default (optional safety)
+        if(t.RecordTypeId == null) {
+            // You can log a warning or throw exception if Record Type is mandatory
+            System.debug('Warning: Physical_Meeting Record Type not found');
+        }
+
+        insert t;
+
+        return t.Id;
+    }
+
+    @AuraEnabled(cacheable=true)
+    public static List<Map<String, String>> getDeskManagerOptions() {
+        List<Desk_Manager_Data__mdt> records = [
+            SELECT MasterLabel, Name__c, Phone_No__c
+            FROM Desk_Manager_Data__mdt
+            ORDER BY MasterLabel
+        ];
+
+        List<Map<String, String>> options = new List<Map<String, String>>();
+
+        for(Desk_Manager_Data__mdt r : records) {
+            Map<String, String> option = new Map<String, String>();
+            option.put('label', r.MasterLabel);
+            option.put('value', r.Name__c);
+            options.add(option);
+        }
+        return options;
+    }
+
+    @AuraEnabled
+    public static Id createEventFromTask(Id taskId) {
+
+        if(taskId == null){
+            throw new AuraHandledException('Task Id is required');
+        }
+
+        Task t = [
+            SELECT Id, Subject, WhatId, WhoId, OwnerId, CreatedDate
+            FROM Task
+            WHERE Id = :taskId
+            LIMIT 1
+        ];
+
+        // Check latest Task
+        List<Task> latestTasks = [
+            SELECT Id, CreatedDate
+            FROM Task
+            WHERE WhatId = :t.WhatId
+            AND Subject = :t.Subject
+            AND OwnerId = :t.OwnerId
+            ORDER BY CreatedDate DESC
+            LIMIT 1
+        ];
+
+        if(latestTasks[0].Id != t.Id){
+            throw new AuraHandledException('Please use the latest Task to create an Event.');
+        }
+
+        // Check if Event already exists for this exact Task
+        // identified by same Subject + WhatId + OwnerId + CreatedDate
+        List<Event> existingEvents = [
+            SELECT Id
+            FROM Event
+            WHERE WhatId = :t.WhatId
+            AND Subject = :t.Subject
+            AND OwnerId = :t.OwnerId
+            AND CreatedDate >= :t.CreatedDate
+            AND CreatedDate < :t.CreatedDate.addSeconds(10)
+            LIMIT 1
+        ];
+
+        if(!existingEvents.isEmpty()){
+            throw new AuraHandledException('Event already created for this Task');
+        }
+
+        Long diffMs = Datetime.now().getTime() - t.CreatedDate.getTime();
+        Double waitingHours = diffMs / (1000.0 * 60 * 60);
+
+        t.Waiting_Time_In_Hours__c = waitingHours;
+        update t;
+
+        Datetime start = System.now();
+
+        Event ev = new Event();
+        ev.Subject = t.Subject;
+        ev.WhatId = t.WhatId;
+        ev.WhoId = t.WhoId;
+        ev.OwnerId = t.OwnerId;
+        ev.Call_Status__c = 'Engaged';
+        ev.Waiting_Time_In_Hours__c = waitingHours;
+        ev.StartDateTime = start;
+        ev.EndDateTime = start;
+
+        insert ev;
+
+        return ev.Id;
+    }
+
+    // ─── Private helper for Flow ──────────────────────────────
+    // Returns "SUCCESS|eventId" or "ERROR|message"
+    // Never throws — Flow cannot handle exceptions
+    private static String createEventFromTaskLogic(Id taskId) {
+
+        if(taskId == null){
+            return 'ERROR|Task Id is required';
+        }
+
+        List<Task> taskList = [
+            SELECT Id, Subject, WhatId, WhoId, OwnerId, CreatedDate
+            FROM Task
+            WHERE Id = :taskId
+            LIMIT 1
+        ];
+
+        if(taskList.isEmpty()){
+            return 'ERROR|Task not found';
+        }
+
+        Task t = taskList[0];
+
+        // Check latest Task
+        List<Task> latestTasks = [
+            SELECT Id, CreatedDate
+            FROM Task
+            WHERE WhatId = :t.WhatId
+            AND Subject = :t.Subject
+            AND OwnerId = :t.OwnerId
+            ORDER BY CreatedDate DESC
+            LIMIT 1
+        ];
+
+        if(latestTasks[0].Id != t.Id){
+            return 'ERROR|Please use the latest Task to create an Event.';
+        }
+
+        // Check if Event already exists for this exact Task
+        // identified by same Subject + WhatId + OwnerId + CreatedDate
+        List<Event> existingEvents = [
+            SELECT Id
+            FROM Event
+            WHERE WhatId = :t.WhatId
+            AND Subject = :t.Subject
+            AND OwnerId = :t.OwnerId
+            AND CreatedDate >= :t.CreatedDate
+            AND CreatedDate < :t.CreatedDate.addSeconds(10)
+            LIMIT 1
+        ];
+
+        if(!existingEvents.isEmpty()){
+            return 'ERROR|Event already created for this Task';
+        }
+
+        Long diffMs = Datetime.now().getTime() - t.CreatedDate.getTime();
+        Double waitingHours = diffMs / (1000.0 * 60 * 60);
+
+        t.Waiting_Time_In_Hours__c = waitingHours;
+        update t;
+
+        Datetime start = System.now();
+
+        Event ev = new Event();
+        ev.Subject = t.Subject;
+        ev.WhatId = t.WhatId;
+        ev.WhoId = t.WhoId;
+        ev.OwnerId = t.OwnerId;
+        ev.Call_Status__c = 'Engaged';
+        ev.Waiting_Time_In_Hours__c = waitingHours;
+        ev.StartDateTime = start;
+        ev.EndDateTime = start;
+
+        insert ev;
+
+        return 'SUCCESS|' + String.valueOf(ev.Id);
+    }
+
+    // ─── Invocable classes for Flow ───────────────────────────
+    public class CreateEventRequest {
+        @InvocableVariable(label='Task Id' required=true)
+        public String taskId;
+    }
+
+    public class CreateEventResult {
+        @InvocableVariable(label='Result')
+        public String result;
+    }
+
+    @InvocableMethod(label='Create Event From Task'
+                     description='Creates Event from Task with validation'
+                     callout=false)
+    public static List<CreateEventResult> createEventFromTaskInvocable(
+                                          List<CreateEventRequest> requests) {
+
+        List<CreateEventResult> results = new List<CreateEventResult>();
+
+        for(CreateEventRequest req : requests) {
+            CreateEventResult res = new CreateEventResult();
+            try {
+                res.result = createEventFromTaskLogic((Id) req.taskId);
+            } catch(Exception e) {
+                res.result = 'ERROR|' + e.getMessage();
+            }
+            results.add(res);
+        }
+
+        return results;
+    }
+
+    /*
+    @AuraEnabled
+    public static void endMeeting(Id eventId) {
+        if (eventId == null) {
+            throw new AuraHandledException('Event Id is required');
+        }
+
+        Event ev = [
+            SELECT Id, Subject, WhatId, OwnerId, Call_Status__c, StartDateTime
+            FROM Event
+            WHERE Id = :eventId
+            LIMIT 1
+        ];
+
+        Long diffMs = Datetime.now().getTime() - ev.StartDateTime.getTime();
+        Double meetingHours = diffMs / (1000.0 * 60 * 60);
+
+        ev.Call_Status__c = 'Call Complete';
+        ev.EndDateTime = System.now();
+        ev.Meeting_Duration_In_Hours__c = meetingHours;
+        update ev;
+
+        List<Task> tasks = [
+            SELECT Id, Status, Call_Status__c
+            FROM Task
+            WHERE WhatId = :ev.WhatId
+            AND Subject = :ev.Subject
+            AND OwnerId = :ev.OwnerId
+            ORDER BY CreatedDate DESC
+            LIMIT 1
+        ];
+
+        if (!tasks.isEmpty()) {
+            tasks[0].Status = 'Completed';
+            tasks[0].Call_Status__c = 'Call Complete';
+            update tasks[0];
+        }
+    }
+    */
+}
