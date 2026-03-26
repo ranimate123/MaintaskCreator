@@ -1,0 +1,98 @@
+<template>
+    <lightning-card title="Form To Schedule Meeting">
+
+        <div class="slds-p-around_medium slds-grid slds-wrap">
+
+            <!-- First Name -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-input
+                    label="First Name"
+                    data-field="firstName"
+                    required
+                    onchange={handleChange}>
+                </lightning-input>
+            </div>
+
+            <!-- Last Name -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-input
+                    label="Last Name"
+                    data-field="lastName"
+                    required
+                    onchange={handleChange}>
+                </lightning-input>
+            </div>
+
+            <!-- Phone -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-input
+                    label="Phone"
+                    data-field="phone"
+                    required
+                    onchange={handleChange}>
+                </lightning-input>
+            </div>
+
+            <!-- Email -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-input
+                    type="email"
+                    label="Email"
+                    data-field="email"
+                    onchange={handleChange}>
+                </lightning-input>
+            </div>
+
+            <!-- User Lookup -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-record-picker
+                    label="Meeting with Sales Person"
+                    object-api-name="User"
+                    required
+                    onchange={handleUserSelect}>
+                </lightning-record-picker>
+            </div>
+
+            <!-- Front Desk Manager -->
+            <div class="slds-col slds-size_1-of-2 slds-p-around_x-small">
+                <lightning-combobox
+                    label="Front Desk Manager"
+                    options={deskManagerOptions}
+                    value={deskManagerDeveloperName}
+                    placeholder="Select Desk Manager"
+                    required
+                    onchange={handleDeskManagerChange}>
+                </lightning-combobox>
+            </div>
+
+        </div>
+
+        <!-- Search Button - Visible only when all required fields are filled -->
+        <div class="slds-p-around_medium">
+            <template if:true={isSearchButtonVisible}>
+                <lightning-button
+                    label="Search Booking"
+                    variant="brand"
+                    onclick={searchAccount}>
+                </lightning-button>
+            </template>
+        </div>
+
+        <!-- Account Result -->
+        <template if:true={account}>
+            <div class="slds-p-around_medium slds-box">
+                <p>
+                    <strong>Person Account Found:</strong> {account.Name}
+                </p>
+
+                <lightning-button
+                    variant="success"
+                    label="Submit"
+                    onclick={createEvent}
+                    class="slds-m-top_medium">
+                </lightning-button>
+            </div>
+        </template>
+
+    </lightning-card>
+</template>
